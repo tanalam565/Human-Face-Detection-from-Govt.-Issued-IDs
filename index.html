@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ID Photo Extractor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>ID Photo Extractor</h1>
+        <p class="description">
+            Upload a government-issued ID (passport, driver's license, identity card) as an image or PDF, 
+            and we'll automatically detect and extract the person's photo.
+        </p>
+
+        <div class="upload-area" id="uploadArea">
+            <p>📄 Drag and drop your ID document here</p>
+            <p>or</p>
+            <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
+                Choose File
+            </button>
+            <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png,.bmp" />
+            <p class="supported-formats">Supported: PDF, JPG, PNG, BMP</p>
+        </div>
+
+        <div class="status" id="status">Ready to process documents</div>
+        <div class="loader" id="loader"></div>
+
+        <!-- Detection Preview Section -->
+        <div class="detection-preview" id="detectionPreview">
+            <h3>Detected Faces - Click to Select:</h3>
+            <canvas id="detectionCanvas"></canvas>
+            <div class="detection-buttons">
+                <button class="action-btn" id="manualSelectBtn">Manual Selection</button>
+                <button class="action-btn" id="cancelBtn">Cancel</button>
+            </div>
+        </div>
+
+        <div class="preview-section" id="previewSection">
+            <div class="preview-grid">
+                <div class="preview-item">
+                    <h3>Original Document</h3>
+                    <canvas id="originalCanvas"></canvas>
+                </div>
+                <div class="preview-item">
+                    <h3>Extracted Photo</h3>
+                    <canvas id="croppedCanvas"></canvas>
+                    <br>
+                    <!-- Rotation Controls -->
+                    <div class="rotation-controls">
+                        <button class="rotate-btn" id="rotateLeftBtn" title="Rotate Left">↺ 90°</button>
+                        <button class="rotate-btn" id="rotateRightBtn" title="Rotate Right">↻ 90°</button>
+                        <button class="rotate-btn" id="rotate180Btn" title="Rotate 180°">⟲ 180°</button>
+                    </div>
+                    <button class="download-btn" id="downloadBtn">Download Photo</button>
+                    <button class="action-btn" id="retryBtn">Try Again</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tracking.js/1.1.3/tracking-min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tracking.js/1.1.3/data/face-min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

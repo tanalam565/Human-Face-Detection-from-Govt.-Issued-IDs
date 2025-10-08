@@ -21,7 +21,7 @@ const rotate180Btn = document.getElementById('rotate180Btn');
 
 let currentCanvas = null;
 let detectedRegions = [];
-let currentRotation = 0; // Track rotation angle
+let currentRotation = 0;
 
 // Show status
 function showStatus(message, type) {
@@ -82,8 +82,19 @@ async function handleFile(file) {
         }
 
         currentCanvas = imageData;
-        displayOriginal(imageData);
-        await detectFaces(imageData);
+        
+        // Auto-straighten document if necessary
+        showStatus('Checking document orientation...', 'info');
+        const straightenedCanvas = await autoStraightenDocument(currentCanvas);
+        if (straightenedCanvas !== currentCanvas) {
+            showStatus('Document auto-corrected for proper orientation', 'success');
+            currentCanvas = straightenedCanvas;
+        }
+        
+        displayOriginal(currentCanvas);
+        
+        // Auto-detect faces after straightening
+        await detectFaces(currentCanvas);
 
     } catch (error) {
         showStatus('Error: ' + error.message, 'error');
@@ -92,6 +103,190 @@ async function handleFile(file) {
         toggleLoader(false);
     }
 }
+
+
+// Auto-straighten document by testing all 4 orientations
+async function autoStraightenDocument(canvas) {
+    try {
+        showStatus('Testing all orientations to find correct rotation...', 'info');
+        
+        // Create a better quality version for OCR
+        const testCanvas = document.createElement('canvas');
+        const scale = Math.min(1, 1500 / Math.max(canvas.width, canvas.height));
+        testCanvas.width = canvas.width * scale;
+        testCanvas.height = canvas.height * scale;
+        const ctx = testCanvas.getContext('2d');
+        
+        // Draw with better quality
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(canvas, 0, 0, testCanvas.width, testCanvas.height);
+        
+        // Preprocess for better OCR
+        const preprocessed = preprocessForOCR(testCanvas);
+        
+        // Test all 4 orientations
+        const orientations = [
+            { angle: 0, name: '0° (original)' },
+            { angle: 90, name: '90° clockwise' },
+            { angle: 180, name: '180° (upside down)' },
+            { angle: 270, name: '270° clockwise (90° counter-clockwise)' }
+        ];
+        const results = [];
+        
+        for (let orientation of orientations) {
+            const angle = orientation.angle;
+            console.log(`\n=== Testing ${orientation.name} ===`);
+            showStatus(`Testing ${orientation.name}...`, 'info');
+            
+            // Rotate canvas to test this orientation
+            const rotatedCanvas = angle === 0 ? preprocessed : rotateCanvasBy(preprocessed, angle);
+            
+            // Run OCR with better settings
+            console.log('Running OCR...');
+            const result = await Tesseract.recognize(
+                rotatedCanvas.toDataURL('image/png'),
+                'eng',
+                {
+                    logger: (m) => {
+                        if (m.status === 'recognizing text') {
+                            const progress = Math.round(m.progress * 100);
+                            if (progress % 25 === 0) {
+                                console.log(`  Progress: ${progress}%`);
+                            }
+                        }
+                    },
+                    tessedit_pageseg_mode: Tesseract.PSM.AUTO
+                }
+            );
+            
+            // Analyze results
+            const words = result.data.words || [];
+            const allWords = words.length;
+            const goodWords = words.filter(w => w.confidence > 50);
+            const greatWords = words.filter(w => w.confidence > 70);
+            
+            const totalConfidence = goodWords.reduce((sum, w) => sum + w.confidence, 0);
+            const avgConfidence = goodWords.length > 0 ? totalConfidence / goodWords.length : 0;
+            
+            // Count alphanumeric characters
+            const text = result.data.text || '';
+            const alphanumericCount = (text.match(/[A-Za-z0-9]/g) || []).length;
+            const textLength = text.trim().length;
+            
+            // Calculate score with better weighting
+            const score = (greatWords.length * 30) + (goodWords.length * 15) + (avgConfidence * 2) + (alphanumericCount * 3);
+            
+            results.push({
+                angle: angle,
+                name: orientation.name,
+                score: score,
+                allWords: allWords,
+                goodWords: goodWords.length,
+                greatWords: greatWords.length,
+                avgConfidence: avgConfidence,
+                charCount: alphanumericCount,
+                textLength: textLength,
+                sampleText: text.substring(0, 150).trim()
+            });
+            
+            console.log(`Results for ${orientation.name}:`);
+            console.log(`  Total words detected: ${allWords}`);
+            console.log(`  Good words (>50% conf): ${goodWords.length}`);
+            console.log(`  Great words (>70% conf): ${greatWords.length}`);
+            console.log(`  Average confidence: ${avgConfidence.toFixed(1)}%`);
+            console.log(`  Alphanumeric chars: ${alphanumericCount}`);
+            console.log(`  Text length: ${textLength}`);
+            console.log(`  SCORE: ${score.toFixed(1)}`);
+            if (text.trim()) {
+                console.log(`  Sample text: "${text.substring(0, 100).trim()}"`);
+            } else {
+                console.log(`  Sample text: [NO TEXT DETECTED]`);
+            }
+        }
+        
+        // Sort by score (highest = most readable)
+        results.sort((a, b) => b.score - a.score);
+        
+        console.log('\n========================================');
+        console.log('=== FINAL RESULTS ===');
+        console.log('========================================');
+        results.forEach((r, i) => {
+            const marker = i === 0 ? '👑 WINNER' : '';
+            console.log(`${i + 1}. ${r.name}: Score=${r.score.toFixed(1)}, Words=${r.goodWords}/${r.allWords}, Conf=${r.avgConfidence.toFixed(1)}% ${marker}`);
+        });
+        console.log('========================================\n');
+        
+        const best = results[0];
+        const second = results[1];
+        
+        // More lenient thresholds
+        const scoreRatio = second.score > 0 ? best.score / second.score : 999;
+        
+        console.log(`Best: ${best.name} (score: ${best.score.toFixed(1)})`);
+        console.log(`Second: ${second.name} (score: ${second.score.toFixed(1)})`);
+        console.log(`Ratio: ${scoreRatio.toFixed(2)}x better`);
+        
+        // Apply rotation if best orientation is better
+        if (best.angle !== 0 && (best.score > second.score * 1.15 || best.goodWords >= 2)) {
+            console.log(`\n✅ AUTO-ROTATING document by ${best.angle}°`);
+            console.log(`Reason: ${best.name} is clearly more readable\n`);
+            showStatus(`Document auto-corrected (rotated ${best.angle}°)`, 'success');
+            return rotateCanvasBy(canvas, best.angle);
+        } else if (best.angle === 0) {
+            console.log('\n✅ Document is already correctly oriented\n');
+            showStatus('Document orientation is correct', 'success');
+            return canvas;
+        } else {
+            console.log('\n⚠️ No clear best orientation, keeping original\n');
+            showStatus('Keeping original orientation', 'info');
+            return canvas;
+        }
+        
+    } catch (error) {
+        console.error('Orientation detection failed:', error);
+        showStatus('Orientation detection failed, using original', 'error');
+        return canvas;
+    }
+}
+
+// Preprocess image for better OCR
+function preprocessForOCR(canvas) {
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = canvas.width;
+    tempCanvas.height = canvas.height;
+    const ctx = tempCanvas.getContext('2d');
+    
+    // Draw original
+    ctx.drawImage(canvas, 0, 0);
+    
+    // Get image data
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    
+    // Convert to grayscale and enhance contrast
+    for (let i = 0; i < data.length; i += 4) {
+        // Grayscale
+        const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+        
+        // Increase contrast
+        const contrast = 1.3;
+        const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+        const enhanced = factor * (gray - 128) + 128;
+        const final = Math.max(0, Math.min(255, enhanced));
+        
+        data[i] = data[i + 1] = data[i + 2] = final;
+    }
+    
+    ctx.putImageData(imageData, 0, 0);
+    return tempCanvas;
+}
+
+
+
+
+
+
 
 // Process PDF file
 async function processPDF(file) {
@@ -137,6 +332,36 @@ function displayOriginal(canvas) {
     originalCanvas.width = canvas.width * scale;
     originalCanvas.height = canvas.height * scale;
     ctx.drawImage(canvas, 0, 0, originalCanvas.width, originalCanvas.height);
+}
+
+// Rotate canvas by degrees
+function rotateCanvasBy(canvas, degrees) {
+    const tempCanvas = document.createElement('canvas');
+    const tempCtx = tempCanvas.getContext('2d');
+    
+    // For 90 or 270 degrees, swap width and height
+    if (Math.abs(degrees) === 90 || Math.abs(degrees) === 270) {
+        tempCanvas.width = canvas.height;
+        tempCanvas.height = canvas.width;
+    } else {
+        tempCanvas.width = canvas.width;
+        tempCanvas.height = canvas.height;
+    }
+    
+    // Move to center
+    tempCtx.translate(tempCanvas.width / 2, tempCanvas.height / 2);
+    
+    // Rotate
+    tempCtx.rotate((degrees * Math.PI) / 180);
+    
+    // Draw image centered
+    tempCtx.drawImage(
+        canvas,
+        -canvas.width / 2,
+        -canvas.height / 2
+    );
+    
+    return tempCanvas;
 }
 
 // Preprocess image for better detection
@@ -199,15 +424,44 @@ async function detectFaces(canvas) {
     const validFaces = filterFaces(allFaces, canvas);
     
     if (validFaces.length === 0) {
-        showStatus('Auto-detection failed. Use "Manual Selection" to crop the photo.', 'error');
+        showStatus('No faces detected. Try "Rotate & Retry" or "Manual Selection".', 'error');
         detectionPreview.style.display = 'block';
         showDetectionCanvas(canvas, []);
+        setupRetryButtons();
         return;
     }
 
     detectedRegions = validFaces;
     showDetectionCanvas(canvas, validFaces);
-    showStatus(`Found ${validFaces.length} face(s). Click on the correct one or use Manual Selection.`, 'success');
+    setupRetryButtons();
+    showStatus(`Found ${validFaces.length} face(s). Click on one, or use "Rotate & Retry"/"Manual Selection".`, 'success');
+}
+
+// Setup retry buttons
+function setupRetryButtons() {
+    manualSelectBtn.textContent = 'Manual Selection';
+    manualSelectBtn.onclick = () => {
+        detectionPreview.style.display = 'none';
+        enableManualCrop();
+    };
+    
+    cancelBtn.textContent = '↺ Rotate & Retry';
+    cancelBtn.style.background = '#2196F3';
+    cancelBtn.onclick = rotateAndRetry;
+}
+
+// Rotate document and retry detection
+async function rotateAndRetry() {
+    // Rotate document 90 degrees counterclockwise
+    currentCanvas = rotateCanvasBy(currentCanvas, -90);
+    
+    // Update displays
+    displayOriginal(currentCanvas);
+    
+    // Re-run face detection
+    toggleLoader(true);
+    await detectFaces(currentCanvas);
+    toggleLoader(false);
 }
 
 // Detect faces in a region
@@ -243,7 +497,7 @@ function filterFaces(faces, canvas) {
         
         // Face should be 0.5-25% of image, reasonable aspect ratio
         return ratio > 0.005 && ratio < 0.25 && aspectRatio > 0.4 && aspectRatio < 2.5;
-    }).sort((a, b) => (b.width * b.height) - (a.width * a.height)).slice(0, 5); // Top 5 candidates
+    }).sort((a, b) => (b.width * b.height) - (a.width * a.height)).slice(0, 5);
 }
 
 // Show detection canvas with clickable boxes
@@ -310,23 +564,16 @@ function cropFace(face) {
     croppedCanvas.height = height;
     ctx.drawImage(currentCanvas, x, y, width, height, 0, 0, width, height);
 
-    currentRotation = 0; // Reset rotation for new crop
+    currentRotation = 0;
     detectionPreview.style.display = 'none';
     previewSection.style.display = 'block';
     showStatus('Photo extracted successfully!', 'success');
 }
 
-// Manual selection mode
-manualSelectBtn.addEventListener('click', () => {
-    detectionPreview.style.display = 'none';
-    enableManualCrop();
-});
-
 // Enable manual crop
 function enableManualCrop() {
     showStatus('Click and drag to select the photo area on the document', 'info');
     
-    // Show a larger version of the original for easier selection
     const tempCanvas = document.createElement('canvas');
     const maxWidth = 700;
     const displayScale = Math.min(1, maxWidth / currentCanvas.width);
@@ -335,7 +582,6 @@ function enableManualCrop() {
     const tempCtx = tempCanvas.getContext('2d');
     tempCtx.drawImage(currentCanvas, 0, 0, tempCanvas.width, tempCanvas.height);
     
-    // Replace detection canvas with the temp canvas for manual selection
     detectionPreview.style.display = 'block';
     detectionCanvas.width = tempCanvas.width;
     detectionCanvas.height = tempCanvas.height;
@@ -360,10 +606,7 @@ function enableManualCrop() {
         const currentX = e.clientX - rect.left;
         const currentY = e.clientY - rect.top;
         
-        // Redraw image
         ctx.drawImage(tempCanvas, 0, 0);
-        
-        // Draw selection rectangle
         ctx.strokeStyle = '#ff0000';
         ctx.lineWidth = 3;
         ctx.strokeRect(startX, startY, currentX - startX, currentY - startY);
@@ -376,25 +619,22 @@ function enableManualCrop() {
         const endY = e.clientY - rect.top;
         isDrawing = false;
         
-        // Calculate selection in original canvas coordinates
         const x = Math.min(startX, endX) * scale;
         const y = Math.min(startY, endY) * scale;
         const width = Math.abs(endX - startX) * scale;
         const height = Math.abs(endY - startY) * scale;
         
         if (width > 20 && height > 20) {
-            // Crop selected area
             const cropCtx = croppedCanvas.getContext('2d');
             croppedCanvas.width = width;
             croppedCanvas.height = height;
             cropCtx.drawImage(currentCanvas, x, y, width, height, 0, 0, width, height);
             
-            currentRotation = 0; // Reset rotation for new crop
+            currentRotation = 0;
             detectionPreview.style.display = 'none';
             previewSection.style.display = 'block';
             showStatus('Manual crop successful!', 'success');
             
-            // Clean up event listeners
             detectionCanvas.style.cursor = 'default';
             detectionCanvas.onmousedown = null;
             detectionCanvas.onmousemove = null;
@@ -405,13 +645,6 @@ function enableManualCrop() {
     };
 }
 
-// Cancel detection
-cancelBtn.addEventListener('click', () => {
-    detectionPreview.style.display = 'none';
-    showStatus('Upload canceled. Please try another document.', 'info');
-    fileInput.value = '';
-});
-
 // Retry
 retryBtn.addEventListener('click', () => {
     previewSection.style.display = 'none';
@@ -420,62 +653,31 @@ retryBtn.addEventListener('click', () => {
     fileInput.value = '';
 });
 
-// Rotation functions
+// Rotation functions for extracted photo
 function rotateImage(degrees) {
-    const tempCanvas = document.createElement('canvas');
-    const tempCtx = tempCanvas.getContext('2d');
-    
-    // For 90 or 270 degrees, swap width and height
-    if (degrees === 90 || degrees === 270) {
-        tempCanvas.width = croppedCanvas.height;
-        tempCanvas.height = croppedCanvas.width;
-    } else {
-        tempCanvas.width = croppedCanvas.width;
-        tempCanvas.height = croppedCanvas.height;
-    }
-    
-    // Move to center
-    tempCtx.translate(tempCanvas.width / 2, tempCanvas.height / 2);
-    
-    // Rotate
-    tempCtx.rotate((degrees * Math.PI) / 180);
-    
-    // Draw image centered
-    tempCtx.drawImage(
-        croppedCanvas,
-        -croppedCanvas.width / 2,
-        -croppedCanvas.height / 2
-    );
-    
-    // Update the cropped canvas
-    croppedCanvas.width = tempCanvas.width;
-    croppedCanvas.height = tempCanvas.height;
+    const rotated = rotateCanvasBy(croppedCanvas, degrees);
+    croppedCanvas.width = rotated.width;
+    croppedCanvas.height = rotated.height;
     const ctx = croppedCanvas.getContext('2d');
-    ctx.drawImage(tempCanvas, 0, 0);
-    
-    // Update rotation tracking
+    ctx.drawImage(rotated, 0, 0);
     currentRotation = (currentRotation + degrees) % 360;
 }
 
-// Rotate left (counter-clockwise)
 rotateLeftBtn.addEventListener('click', () => {
     rotateImage(-90);
     showStatus('Rotated 90° left', 'success');
 });
 
-// Rotate right (clockwise)
 rotateRightBtn.addEventListener('click', () => {
     rotateImage(90);
     showStatus('Rotated 90° right', 'success');
 });
 
-// Rotate 180 degrees
 rotate180Btn.addEventListener('click', () => {
     rotateImage(180);
     showStatus('Rotated 180°', 'success');
 });
 
-// Download
 downloadBtn.addEventListener('click', () => {
     croppedCanvas.toBlob((blob) => {
         const url = URL.createObjectURL(blob);

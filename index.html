@@ -15,7 +15,7 @@
         </p>
 
         <div class="upload-area" id="uploadArea">
-            <p>📄 Drag and drop your ID document here</p>
+            <p>Drag and drop your ID document here</p>
             <p>or</p>
             <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
                 Choose File
@@ -63,6 +63,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tracking.js/1.1.3/tracking-min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tracking.js/1.1.3/data/face-min.js"></script>
+    <!-- Add Tesseract.js for text orientation detection -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
